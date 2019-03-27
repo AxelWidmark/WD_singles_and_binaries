@@ -5,6 +5,7 @@ import scipy.stats as stats
 from scipy.interpolate import RectBivariateSpline,RegularGridInterpolator
 pi=math.pi
 from scipy.special import erfc
+import os
 
 def prior_spatial(coords,coordsystem="proper"):
     #everything in kpc here, parallax in milliarcsecond
@@ -48,25 +49,29 @@ m0s = np.array( [24.63,25.11,24.80,24.36,22.83] )
 from sklearn.mixture import GaussianMixture as GMM
 from scipy import spatial
 def compute_nearest_neighbours(vector):
+    obj_param_dims = len(vector[0])
     vector = np.array(vector)
-    scale_lengths = np.zeros(len(vector[0]))
+    scale_lengths = np.zeros(obj_param_dims)
     volume_rescaling = 1.
     vector_no_duplicates = [vector[0]]
     for i in range(1,len(vector)):
         if vector[i-1].all!=vector[i].all:
             vector_no_duplicates.append(vector[i])
-    for i in range(len(vector[0])):
+    for i in range(obj_param_dims):
         scale_lengths[i] = np.cov(vector[:,i])**0.5
         volume_rescaling = volume_rescaling*scale_lengths[i]
     for j in range(len(vector)):
-        for k in range(len(vector[0])):
+        for k in range(obj_param_dims):
             vector[j,k] = vector[j,k]/scale_lengths[k]
     distances,neighbours = spatial.KDTree(vector_no_duplicates).query(vector,k=2)
-    volumes = 4.*pi/3.*distances[:,1]**3.*volume_rescaling
+    if obj_param_dims==3:
+        volumes = 4.*pi/3.*distances[:,1]**3.*volume_rescaling
+    elif obj_param_dims==5:
+        volumes = 8.*pi**2./15.*distances[:,1]**5.*volume_rescaling
     return np.array(neighbours)[:,1],volumes
 def calc_evidence(obj_params,obj_probs):
     neighbours,volumes = compute_nearest_neighbours(obj_params)
-    return np.sum( np.array(volumes)*obj_probs )
+    return ( len(volumes)/(len(volumes)+1) )*np.sum( np.array(volumes)*obj_probs )
 
 
 class WD_system():
@@ -165,7 +170,7 @@ class WD_system():
         res += np.log( dist**2. )
         res += np.log( prior_spatial([self.l,self.b,dist]) )
         # jacobian due to log10age, corresponding to flat prior in age
-        res += np.log( np.log(10.)*10.**log10age/1e10 )
+        res += np.log( np.log(10.)*(10.**log10age1)/1e10 )
         # there is a det(JACOBIAN) term here, due to the distance trick, equal to partial(distance)/partial(params[2])
         if distance_trick:
             res += np.log(Gmag_average_distance)
@@ -179,7 +184,7 @@ class WD_system():
         return res
     
     
-    def lnprob_binary_flat(self,params,WDtypes,agediff=5e8,distance_trick=False):
+    def lnprob_binary_flat(self,params,WDtypes,agediff=None,massdiff=None,distance_trick=False):
         mass1,log10age1,mass2,age2_rel_age1,dist = params
         if 10.**log10age1+age2_rel_age1>1e5:
             log10age2 = np.log10( 10.**log10age1+age2_rel_age1 )
@@ -235,6 +240,8 @@ class WD_system():
             res += -(fluxModel[i]-self.ugriz_flux[i])**2./(2.*self.ugriz_flux_err[i]**2.)   -np.log( np.sqrt(2.*pi*self.ugriz_flux_err[i]**2.) )
         res += -(1./dist-self.parallax)**2./(2.*self.parallax_err**2.)   -np.log( np.sqrt(2.*pi*self.parallax_err**2.) )
         res += np.log( dist**2. )
+        if massdiff!=None:
+            res += -1./2.*( (mass1-mass2)/massdiff )**2.    -np.log( np.sqrt(2.*pi*massdiff**2.) )
         # this term prevents multiplicity in masses, but with a soft edge
         res += np.log( erfc((mass1-mass2)/0.05)/2. )
         res += np.log( prior_spatial([self.l,self.b,dist]) )
@@ -259,119 +266,110 @@ class WD_system():
             res += -(mass2-1.150)**2./(2.*0.05**2.)
         return res
     
-    def fit_single_GMM(self,index):
+    def fit_single_GMM(self,index,WDtype):
         masses = np.linspace(0.15,1.5,10)
         log10ages = np.linspace(5.,10.,15)
-        for WDtype in [0.,1.]:
-            print('\n\n\n')
-            print('WDtype:',WDtype)
-            best = [-np.inf,None,None]
-            for mass_i in range(len(masses)):
-                mass = masses[mass_i]
-                for log10age_i in range(len(log10ages)):
-                    log10age = log10ages[log10age_i]
-                    res = self.lnprob_single_flat([mass,log10age,1./self.parallax],WDtype)
-                    if res>best[0]:
-                        best = [res,mass,log10age]
-            def ln_func(params):
-                return self.lnprob_single_flat(params,WDtype,distance_trick=True)
-            p0 = [best[1],best[2],1.]
-            initialstepcovar = np.array( [0.1**2., 0.1**2., 1e-2**2.] )
-            s = sampler(ln_func,3,p0,initialstepcovar)
-            for run_i in range(1,6):
-                s.run(100)
-                s.set_stepcovar(10**(-run_i)*initialstepcovar)
-            s.burnin(1000)
-            s.burnin(1000)
-            s.burnin(2000)
-            s.burnin(3000)
-            s.set_stepcovar(0.2*s.get_stepcovar())
-            s.burnin(5000)
-            s.set_stepcovar(0.2*s.get_stepcovar())
-            chain,lnprobchain,acc = s.run(30000)
-            thinning_factor = min(int(5./acc),50)
-            num_steps = int(3e4*thinning_factor-3e4)
-            print('Thinning factor:',thinning_factor)
-            print('Number of steps:',num_steps)
-            s.run(num_steps)
-            chain = s.get_chain()[::thinning_factor]
-            lnprobchain = s.get_lnprobchain()[::thinning_factor]
-            evidence = calc_evidence(chain,np.exp(lnprobchain))
-            print('Evidence:',evidence)
-            bic0 = np.inf
-            for n_comp in range(2,7):
-                gmm = GMM(n_components=n_comp,max_iter=10000,tol=1e-4,n_init=5)
-                gmm.fit([[c[0]] for c in chain])
-                bic = gmm.bic(np.array( [[c[0]] for c in chain] ))
-                if bic<bic0:
-                    bic0 = bic
-                    gmm_weights = gmm.weights_
-                    gmm_means = gmm.means_
-                    gmm_covs = gmm.covariances_
-                else:
-                    break
-            print('# of GMM components:',len(gmm_weights))
-            np.savez('../Data/Obj_GMMs/'+str(index)+'_'+str(int(WDtype)),evidence=evidence,gmm_weights=gmm_weights,gmm_means=gmm_means,gmm_covs=gmm_covs)
+        best = [-np.inf,None,None]
+        for mass_i in range(len(masses)):
+            mass = masses[mass_i]
+            for log10age_i in range(len(log10ages)):
+                log10age = log10ages[log10age_i]
+                res = self.lnprob_single_flat([mass,log10age,1./self.parallax],WDtype)
+                if res>best[0]:
+                    best = [res,mass,log10age]
+        def ln_func(params):
+            return self.lnprob_single_flat(params,WDtype,distance_trick=True)
+        p0 = [best[1],best[2],1.]
+        initialstepcovar = np.array( [0.1**2., 0.1**2., 1e-2**2.] )
+        s = sampler(ln_func,3,p0,initialstepcovar)
+        for run_i in range(1,6):
+            s.run(100)
+            s.set_stepcovar(10**(-run_i)*initialstepcovar)
+        s.burnin(1000)
+        s.burnin(1000)
+        s.burnin(2000)
+        s.set_stepcovar(0.2*s.get_stepcovar())
+        s.burnin(5000)
+        s.set_stepcovar(0.2*s.get_stepcovar())
+        chain,lnprobchain,acc = s.run(30000)
+        thinning_factor = min(int(5./acc),50)
+        num_steps = int(3e4*thinning_factor-3e4)
+        print('Thinning factor:',thinning_factor)
+        print('Number of steps:',num_steps)
+        s.run(num_steps)
+        chain = s.get_chain()[::thinning_factor]
+        lnprobchain = s.get_lnprobchain()[::thinning_factor]
+        evidence = calc_evidence(chain,np.exp(lnprobchain))
+        print('Evidence:',evidence)
+        bic0 = np.inf
+        for n_comp in range(2,7):
+            gmm = GMM(n_components=n_comp,max_iter=10000,tol=1e-4,n_init=5)
+            gmm.fit([[c[0]] for c in chain])
+            bic = gmm.bic(np.array( [[c[0]] for c in chain] ))
+            if bic<bic0:
+                bic0 = bic
+                gmm_weights = gmm.weights_
+                gmm_means = gmm.means_
+                gmm_covs = gmm.covariances_
+            else:
+                break
+        print('# of GMM components:',len(gmm_weights))
+        np.savez('../Data/Obj_GMMs/'+str(index)+'_'+str(int(WDtype)),evidence=evidence,gmm_weights=gmm_weights,gmm_means=gmm_means,gmm_covs=gmm_covs)
         return 0.
     
     
-    def fit_binary_GMM(self,index,agediff=5e8):
+    def fit_binary_GMM(self,index,WDtypes,agediff=None,massdiff=None):
         masses = np.linspace(0.15,1.5,10)
         log10ages = np.linspace(5.,10.,15)
-        for WDtypes in [[0.,0.],[0.,1.],[1.,0.],[1.,1.]]:
-            print('\n\n\n')
-            print('WDtypes:',WDtypes)
-            best = [-np.inf,None,None,None,None]
-            for mass_i in range(len(masses)):
-                mass1 = masses[mass_i]
-                for mass_j in range(mass_i,len(masses)):
-                    mass2 = masses[mass_j]
-                    for log10age_i in range(len(log10ages)):
-                        log10age1 = log10ages[log10age_i]
-                        for age2_rel_age1 in np.linspace(10.**log10age1-agediff,10.**log10age1+agediff,5):
-                            res = self.lnprob_binary_flat([mass1,log10age1,mass2,age2_rel_age1,1./self.parallax],WDtypes,agediff=agediff)
-                            if res>best[0]:
-                                best = [res,mass1,log10age1,mass2,age2_rel_age1]
-            def ln_func(params):
-                return self.lnprob_binary_flat(params,WDtypes,agediff=agediff,distance_trick=True)
-            p0 = [best[1],best[2],best[3],best[4],1.]
-            initialstepcovar = np.array( [0.1**2., 0.1**2., 0.1**2., agediff**2., 1e-2**2.] )
-            s = sampler(ln_func,5,p0,initialstepcovar)
-            for run_i in range(1,5):
-                s.run(1000)
-                s.set_stepcovar(10**(-run_i)*initialstepcovar)
-            s.burnin(1000)
-            s.burnin(1000)
-            s.burnin(2000)
-            s.burnin(3000)
+        best = [-np.inf,None,None,None,None]
+        for mass_i in range(len(masses)):
+            mass1 = masses[mass_i]
+            for mass_j in range(mass_i,len(masses)):
+                mass2 = masses[mass_j]
+                for log10age_i in range(len(log10ages)):
+                    log10age1 = log10ages[log10age_i]
+                    for age2_rel_age1 in np.linspace(10.**log10age1-agediff,10.**log10age1+agediff,5):
+                        res = self.lnprob_binary_flat([mass1,log10age1,mass2,age2_rel_age1,1./self.parallax],WDtypes,agediff=agediff,massdiff=massdiff)
+                        if res>best[0]:
+                            best = [res,mass1,log10age1,mass2,age2_rel_age1]
+        def ln_func(params):
+            return self.lnprob_binary_flat(params,WDtypes,agediff=agediff,massdiff=massdiff,distance_trick=True)
+        p0 = [best[1],best[2],best[3],best[4],1.]
+        initialstepcovar = np.array( [0.1**2., 0.1**2., 0.1**2., (1e-2*agediff)**2., 1e-2**2.] )
+        s = sampler(ln_func,5,p0,initialstepcovar)
+        for run_i in range(1,6):
+            s.run(500)
+            s.set_stepcovar(10**(-run_i)*initialstepcovar)
+        for run_i in range(10):
+            s.burnin(2500)
             s.set_stepcovar(0.2*s.get_stepcovar())
-            s.burnin(5000)
-            s.set_stepcovar(0.2*s.get_stepcovar())
-            chain,lnprobchain,acc = s.run(30000)
-            thinning_factor = min(int(5./acc),50)
-            num_steps = int(3e4*thinning_factor-3e4)
-            print('Thinning factor:',thinning_factor)
-            print('Number of steps:',num_steps)
-            s.run(num_steps)
-            chain = s.get_chain()[::thinning_factor]
-            lnprobchain = s.get_lnprobchain()[::thinning_factor]
-            evidence = calc_evidence(chain,np.exp(lnprobchain))
-            print('Evidence:',evidence)
-            bic0 = np.inf
-            for n_comp in range(2,9):
-                gmm = GMM(n_components=n_comp,max_iter=10000,tol=1e-4,n_init=5)
-                gmm.fit([[c[0],c[2]] for c in chain],GMM)
-                #print("GMM likelihood:",np.exp(gmm.lower_bound_))
-                bic = gmm.bic(np.array( [[c[0],c[2]] for c in chain] ))
-                if bic<bic0:
-                    bic0 = bic
-                    gmm_weights = gmm.weights_
-                    gmm_means = gmm.means_
-                    gmm_covs = gmm.covariances_
-                else:
-                    break
-            print('# of GMM components:',len(gmm_weights))
-            np.savez('../Data/Obj_GMMs/'+str(index)+'_'+str(int(WDtypes[0]))+'-'+str(int(WDtypes[1]))+'_'+str(int(agediff/1e6))+'Myr',evidence=evidence,gmm_weights=gmm_weights,gmm_means=gmm_means,gmm_covs=gmm_covs)
+        s.burnin(5000)
+        s.set_stepcovar(0.2*s.get_stepcovar())
+        chain,lnprobchain,acc = s.run(30000)
+        thinning_factor = min(int(5./acc),50)
+        num_steps = int(3e4*thinning_factor-3e4)
+        print('Thinning factor:',thinning_factor)
+        print('Number of steps:',num_steps)
+        s.run(num_steps)
+        chain = s.get_chain()[::thinning_factor]
+        lnprobchain = s.get_lnprobchain()[::thinning_factor]
+        evidence = calc_evidence(chain,np.exp(lnprobchain))
+        print('Evidence:',evidence)
+        bic0 = np.inf
+        for n_comp in range(2,9):
+            gmm = GMM(n_components=n_comp,max_iter=10000,tol=1e-4,n_init=5)
+            gmm.fit([[c[0],c[2]] for c in chain],GMM)
+            #print("GMM likelihood:",np.exp(gmm.lower_bound_))
+            bic = gmm.bic(np.array( [[c[0],c[2]] for c in chain] ))
+            if bic<bic0:
+                bic0 = bic
+                gmm_weights = gmm.weights_
+                gmm_means = gmm.means_
+                gmm_covs = gmm.covariances_
+            else:
+                break
+        print('# of GMM components:',len(gmm_weights))
+        np.savez('../Data/Obj_GMMs/'+str(index)+'_'+str(int(WDtypes[0]))+'-'+str(int(WDtypes[1]))+(massdiff!=None)*('_'+str(massdiff))+'_'+str(int(agediff/1e6))+'Myr',evidence=evidence,gmm_weights=gmm_weights,gmm_means=gmm_means,gmm_covs=gmm_covs)
         return 0.
 
 
