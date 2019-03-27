@@ -11,9 +11,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 import tensorflow as tf
-numTFThreads = 1
+numTFThreads = 2
 
-numpopgaussians = 5
+numpopgaussians = 4
 pop_weights = np.random.uniform(0.,1.,numpopgaussians)
 pop_means   = np.random.uniform(0.4,1.,numpopgaussians)
 pop_covs    = np.random.uniform(0.1**2.,0.2**2.,numpopgaussians)
@@ -26,8 +26,10 @@ pop_fractions = np.random.uniform(0.,0.5,(numpopgaussians,3))
 #pop_fractions = [[0.60139513, 0.0, 0.0], [0.06404678, 0.0, 0.0], [0.15761541, 0.0, 0.0], [0.122598596, 0.0, 0.0], [0.13031293, 0.0, 0.0]]
 
 
-
-
+pop_weights   = [0.50928295, 0.08955507, 0.16754642, 0.2336155]
+pop_means     = [0.5689328, 0.43965518, 0.75278515, 0.9961493]
+pop_covs      = [0.0016807423, 0.009188197, 0.006768013, 0.019205853]
+pop_fractions = [[0.078893304, 0.0478085, 2.3841858e-07], [0.18116482, 0.39472187, 0.9906285], [0.07137887, 5.066395e-06, 2.9861927e-05], [0.3614726, 0.55450857, 0.940295]]
 
 pop_weights = np.array(pop_weights)
 pop_means = np.array(pop_means)
@@ -62,7 +64,6 @@ else:
     double_objects_weights       = np.zeros((1,4,8))
     double_objects_means         = np.zeros((1,4,8,2))
     double_objects_covs          = np.zeros((1,4,8,3))
-
 
 print( "objects loaded", len(single_objects_evidence) )
 #exit()
@@ -153,28 +154,33 @@ Pop_weights = Pop_weights_non_normalized/tf.reduce_sum(Pop_weights_non_normalize
 
 
 
+Hydrog_single_fractions = (1.-Pop_fractions[:, 0]) * (1.-Pop_fractions[:, 1])
+Helium_single_fractions = Pop_fractions[:, 0] * (1.-Pop_fractions[:, 2])
+Hydrog_binary_fractions = (1.-Pop_fractions[:, 0]) * Pop_fractions[:, 1]
+Helium_binary_fractions = Pop_fractions[:, 0] * Pop_fractions[:, 2]
+
 ### CALCULATE OBJECT EVIDENCES
 # indices are: object, obj gauss, pop gauss
-Objev_0 = Pop_weights[None, None, :] * (1.-Pop_fractions[None, None, :, 0]) * (1.-Pop_fractions[None, None, :, 1])    \
+Objev_0 = Pop_weights[None, None, :] * Hydrog_single_fractions[None, None, :]    \
     * Single_objects_evidence[:, 0, None, None] * Single_objects_weights[:, 0, :, None]   \
     * tf.exp( -tf.pow(Single_objects_means[:, 0, :, None]-Pop_means[None, None, :], 2) / (2.*( Pop_covs[None, None, :]+Single_objects_covs[:, 0, :, None] )) )  \
     / tf.sqrt(2.*pi*( Pop_covs[None, None, :]+Single_objects_covs[:, 0, :, None] ))
 
-Objev_1 = Pop_weights[None, None, :] * Pop_fractions[None, None, :, 0] * (1.-Pop_fractions[None, None, :, 2])    \
+Objev_1 = Pop_weights[None, None, :] * Helium_single_fractions[None, None, :]    \
     * Single_objects_evidence[:, 1, None, None] * Single_objects_weights[:, 1, :, None]   \
     * tf.exp( -tf.pow(Single_objects_means[:, 1, :, None]-Pop_means[None, None, :], 2) / (2.*( Pop_covs[None, None, :]+Single_objects_covs[:, 1, :, None] )) )  \
     / tf.sqrt(2.*pi*( Pop_covs[None, None, :]+Single_objects_covs[:, 1, :, None] ))
 
 if include_binaries:
-    Binary_fraction_connections = tf.reduce_sum( ( (1.-Pop_fractions[:,0])*Pop_fractions[:,1] + Pop_fractions[:,0]*Pop_fractions[:,2] )   \
-        * tf.exp(-tf.pow(Pop_means[:,None]-Pop_means[None,:], 2) / (2. * (Pop_covs[:,None]+Pop_covs[None,:]+massdiff**2.))) \
+    Binary_fraction_connections = tf.reduce_sum( ( Hydrog_binary_fractions[None, :] + Helium_binary_fractions[None, :] )   \
+        * tf.exp( -tf.pow(Pop_means[:,None]-Pop_means[None,:], 2) / (2. * (Pop_covs[:,None] + Pop_covs[None,:] + massdiff**2.)) ) \
         / tf.sqrt(2.*pi*(Pop_covs[:,None]+Pop_covs[None,:]+massdiff**2.)), [1] )
     
-    Binary_fraction_connections_INV = 2. * ( 1./Binary_fraction_connections[:,None] + 1./Binary_fraction_connections[None,:] )
+    Binary_fraction_connections_INV = ( 1./Binary_fraction_connections[:, None] + 1./Binary_fraction_connections[None, :] )
     
     # indices are: object, obj gauss, pop gauss 1, pop gauss 2
-    Pop_prefactor_00 = Pop_weights[:, None] * (1.-Pop_fractions[:, None, 0]) * Pop_fractions[:, None, 1]       \
-        * Pop_weights[None, :] * (1.-Pop_fractions[None, :, 0]) * Pop_fractions[None, :, 1] * Binary_fraction_connections_INV
+    Pop_prefactor_00 = Pop_weights[:, None] * Hydrog_binary_fractions[:, None]       \
+        * Pop_weights[None, :] * Hydrog_binary_fractions[None, :] * Binary_fraction_connections_INV
     Objev_00 = Pop_prefactor_00[None, None, :, :] * Double_objects_evidence[:, 0, None, None, None] * Double_objects_weights[:, 0, :, None, None] * tf.exp( - (     \
         (Pop_covs[None, None, None, :] + Double_objects_covs[:, 0, :, 1, None, None]) * tf.pow( Double_objects_means[:, 0, :, 0, None, None]-Pop_means[None, None, :, None], 2)    \
         + (Pop_covs[None, None, :, None] + Double_objects_covs[:, 0, :, 0, None, None]) * tf.pow( Double_objects_means[:, 0, :, 1, None, None]-Pop_means[None, None, None, :], 2)    \
@@ -183,11 +189,10 @@ if include_binaries:
         -tf.pow( Double_objects_covs[:, 0, :, 2, None, None], 2)      ))   \
         )       \
         / ( 2.*pi * tf.sqrt( (Pop_covs[None, None, None, :]+Double_objects_covs[:, 0, :, 1, None, None])*(Pop_covs[None, None, :, None] + Double_objects_covs[:, 0, :, 0, None, None])     \
-        -tf.pow( Double_objects_covs[:, 0, :, 2, None, None], 2)     ) )    \
-        # * tf.exp( -0.5*tf.pow((Double_objects_means[:, 0, :, 0, None, None]-Double_objects_means[:, 0, :, 1, None, None])/massdiff, 2) ) # TODO remove this last line later
+        -tf.pow( Double_objects_covs[:, 0, :, 2, None, None], 2)     ) )
         
-    Pop_prefactor_01 = Pop_weights[:,None] * (1.-Pop_fractions[:,None,0]) * Pop_fractions[:,None,1]       \
-        * Pop_weights[None,:] * Pop_fractions[None,:,0] * Pop_fractions[None,:,2] * Binary_fraction_connections_INV
+    Pop_prefactor_01 = Pop_weights[:,None] * Hydrog_binary_fractions[:, None]       \
+        * Pop_weights[None,:] * Helium_binary_fractions[None, :] * Binary_fraction_connections_INV
     Objev_01 = Pop_prefactor_01[None, None, :, :] * Double_objects_evidence[:, 1, None, None, None] * Double_objects_weights[:, 1, :, None, None] * tf.exp( - (     \
         (Pop_covs[None, None, None, :] + Double_objects_covs[:, 1, :, 1, None, None]) * tf.pow( Double_objects_means[:, 1, :, 0, None, None]-Pop_means[None, None, :, None], 2)    \
         + (Pop_covs[None, None, :, None] + Double_objects_covs[:, 1, :, 0, None, None]) * tf.pow( Double_objects_means[:, 1, :, 1, None, None]-Pop_means[None, None, None, :], 2)    \
@@ -196,11 +201,10 @@ if include_binaries:
         -tf.pow( Double_objects_covs[:, 1, :, 2, None, None], 2)      ))   \
         )       \
         / ( 2.*pi * tf.sqrt( (Pop_covs[None, None, None, :]+Double_objects_covs[:, 1, :, 1, None, None])*(Pop_covs[None, None, :, None] + Double_objects_covs[:, 1, :, 0, None, None])     \
-        -tf.pow( Double_objects_covs[:, 1, :, 2, None, None], 2)     ) )    \
-        # * tf.exp( -0.5*tf.pow((Double_objects_means[:, 1, :, 0, None, None]-Double_objects_means[:, 1, :, 1, None, None])/massdiff, 2) )
+        -tf.pow( Double_objects_covs[:, 1, :, 2, None, None], 2)     ) )
     
-    Pop_prefactor_10 = Pop_weights[:,None] * Pop_fractions[:,None,0] * Pop_fractions[:,None,2]       \
-        * Pop_weights[None,:] * (1.-Pop_fractions[None,:,0]) * Pop_fractions[None,:,1] * Binary_fraction_connections_INV
+    Pop_prefactor_10 = Pop_weights[:,None] * Helium_binary_fractions[:, None]       \
+        * Pop_weights[None,:] * Hydrog_binary_fractions[None, :] * Binary_fraction_connections_INV
     Objev_10 = Pop_prefactor_10[None, None, :, :] * Double_objects_evidence[:, 2, None, None, None] * Double_objects_weights[:, 2, :, None, None] * tf.exp( - (     \
         (Pop_covs[None, None, None, :] + Double_objects_covs[:, 2, :, 1, None, None]) * tf.pow( Double_objects_means[:, 2, :, 0, None, None]-Pop_means[None, None, :, None], 2)    \
         + (Pop_covs[None, None, :, None] + Double_objects_covs[:, 2, :, 0, None, None]) * tf.pow( Double_objects_means[:, 2, :, 1, None, None]-Pop_means[None, None, None, :], 2)    \
@@ -209,11 +213,10 @@ if include_binaries:
         -tf.pow( Double_objects_covs[:, 2, :, 2, None, None], 2)      ))   \
         )       \
         / ( 2.*pi * tf.sqrt( (Pop_covs[None, None, None, :]+Double_objects_covs[:, 2, :, 1, None, None])*(Pop_covs[None, None, :, None] + Double_objects_covs[:, 2, :, 0, None, None])     \
-        -tf.pow( Double_objects_covs[:, 2, :, 2, None, None], 2)     ) )    \
-        # * tf.exp( -0.5*tf.pow((Double_objects_means[:, 2, :, 0, None, None]-Double_objects_means[:, 2, :, 1, None, None])/massdiff, 2) )
+        -tf.pow( Double_objects_covs[:, 2, :, 2, None, None], 2)     ) )
     
-    Pop_prefactor_11 = Pop_weights[:,None] * Pop_fractions[:,None,0] * Pop_fractions[:,None,2]       \
-        * Pop_weights[None,:] * Pop_fractions[None,:,0] * Pop_fractions[None,:,2] * Binary_fraction_connections_INV
+    Pop_prefactor_11 = Pop_weights[:,None] * Helium_binary_fractions[:, None]       \
+        * Pop_weights[None,:] * Helium_binary_fractions[None, :] * Binary_fraction_connections_INV
     Objev_11 = Pop_prefactor_11[None, None, :, :] * Double_objects_evidence[:, 3, None, None, None] * Double_objects_weights[:, 3, :, None, None] * tf.exp( - (     \
         (Pop_covs[None, None, None, :] + Double_objects_covs[:, 3, :, 1, None, None]) * tf.pow( Double_objects_means[:, 3, :, 0, None, None]-Pop_means[None, None, :, None], 2)    \
         + (Pop_covs[None, None, :, None] + Double_objects_covs[:, 3, :, 0, None, None]) * tf.pow( Double_objects_means[:, 3, :, 1, None, None]-Pop_means[None, None, None, :], 2)    \
@@ -222,12 +225,11 @@ if include_binaries:
         -tf.pow( Double_objects_covs[:, 3, :, 2, None, None], 2)      ))   \
         )       \
         / ( 2.*pi * tf.sqrt( (Pop_covs[None, None, None, :]+Double_objects_covs[:, 3, :, 1, None, None])*(Pop_covs[None, None, :, None] + Double_objects_covs[:, 3, :, 0, None, None])     \
-        -tf.pow( Double_objects_covs[:, 3, :, 2, None, None], 2)     ) )    \
-        # * tf.exp( -0.5*tf.pow((Double_objects_means[:, 3, :, 0, None, None]-Double_objects_means[:, 3, :, 1, None, None])/massdiff, 2) )
+        -tf.pow( Double_objects_covs[:, 3, :, 2, None, None], 2)     ) )
     
     # factor 2 for binaries comes from the mass multiplicity constraint (m1<m2)
     SinglesEvidence = tf.reduce_sum(Objev_0, [1,2]) + tf.reduce_sum(Objev_1, [1,2])
-    DoublesEvidence = (tf.reduce_sum(Objev_00, [1,2,3]) + tf.reduce_sum(Objev_01, [1,2,3]) + tf.reduce_sum(Objev_10, [1,2,3]) + tf.reduce_sum(Objev_11, [1,2,3]))
+    DoublesEvidence = tf.reduce_sum(Objev_00, [1,2,3]) + tf.reduce_sum(Objev_01, [1,2,3]) + tf.reduce_sum(Objev_10, [1,2,3]) + tf.reduce_sum(Objev_11, [1,2,3])
     LogObjEvidences = tf.log(   obj_evidence_eps + SinglesEvidence + DoublesEvidence  )
 else:
     LogObjEvidences = tf.log( obj_evidence_eps + tf.reduce_sum(Objev_0, [1,2]) + tf.reduce_sum(Objev_1, [1,2]) )
@@ -237,24 +239,25 @@ else:
 
 ### CALCULATE NORM
 # indices are: mass, pop gauss
-Norm_0 = tf.reduce_sum(   DNm_0[:, None] * Pop_weights[None, :] * ( 1.-Pop_fractions[None, :, 0] ) * ( 1.-Pop_fractions[None, :, 1] )       \
-    * tf.exp( -tf.pow((Mass_vec[:,None]-Pop_means[None,:]),2)/(2.*Pop_covs[None,:]) ) / tf.sqrt(2.*pi*Pop_covs[None,:])    )
-Norm_1 = tf.reduce_sum(   DNm_1[:,None] * Pop_weights[None,:]* Pop_fractions[None, :, 0] * ( 1.-Pop_fractions[None, :, 2] )      \
-    * tf.exp( -tf.pow((Mass_vec[:,None]-Pop_means[None,:]),2)/(2.*Pop_covs[None,:]) ) / tf.sqrt(2.*pi*Pop_covs[None,:])    )
+Norm_0 = tf.reduce_sum(   DNm_0[:, None] * Pop_weights[None, :] * Hydrog_single_fractions[None, :]       \
+    * tf.exp( -tf.pow(Mass_vec[:, None]-Pop_means[None,:], 2)/(2.*Pop_covs[None,:]) ) / tf.sqrt(2.*pi*Pop_covs[None,:])    )
+Norm_1 = tf.reduce_sum(   DNm_1[:, None] * Pop_weights[None, :] * Helium_single_fractions[None, :]        \
+    * tf.exp( -tf.pow(Mass_vec[:, None]-Pop_means[None,:], 2)/(2.*Pop_covs[None,:]) ) / tf.sqrt(2.*pi*Pop_covs[None,:])    )
 if include_binaries:
     # indices are: mass 1, mass 2, pop gauss 1, pop gauss 2
     Norm_factor = tf.exp( -tf.pow((Mass_vec[:,None,None,None]-Pop_means[None,None,:,None]),2)/(2.*Pop_covs[None,None,:,None]) ) / tf.sqrt(2.*pi*Pop_covs[None,None,:,None])        \
         * tf.exp( -tf.pow((Mass_vec[None,:,None,None]-Pop_means[None,None,None,:]),2)/(2.*Pop_covs[None,None,None,:]) ) / tf.sqrt(2.*pi*Pop_covs[None,None,None,:])   \
         * tf.exp( -1./2.*tf.pow((Mass_vec[:,None,None,None]-Mass_vec[None,:,None,None])/massdiff, 2) ) / np.sqrt(2.*pi*massdiff**2.)   \
-        * Binary_fraction_connections_INV[None, None,:,:]
-    Norm_00 = tf.reduce_sum(   DNm_00[:,:,None,None] * Pop_weights[None,None,:,None] * (1.-Pop_fractions[None,None,:,None,0]) * Pop_fractions[None,None,:,None,1]       \
-        * (1.-Pop_fractions[None,None,None,:,0]) * Pop_fractions[None,None,None,:,1] * Pop_weights[None,None,None,:]  \
+        * Pop_weights[None, None, :, None] * Pop_weights[None, None, None, :]   \
+        * Binary_fraction_connections_INV[None, None, :, :]
+    Norm_00 = tf.reduce_sum(   DNm_00[:, :, None, None]       \
+        * Hydrog_binary_fractions[None, None, :, None] * Hydrog_binary_fractions[None, None, None, :] \
         * Norm_factor           )
-    Norm_01 = tf.reduce_sum(   DNm_01[:,:,None,None] * Pop_weights[None,None,:,None] * (1.-Pop_fractions[None,None,:,None,0]) * Pop_fractions[None,None,:,None,1]       \
-        * Pop_fractions[None, None, None, :, 0] * Pop_fractions[None, None, None, :, 2] * Pop_weights[None, None,None,:]     \
+    Norm_01 = tf.reduce_sum(   DNm_01[:, :, None, None]       \
+        * Hydrog_binary_fractions[None, None, :, None] * Helium_binary_fractions[None, None, None, :]     \
         * Norm_factor    )
-    Norm_11 = tf.reduce_sum(   DNm_11[:,:,None,None] * Pop_weights[None,None,:,None] * Pop_fractions[None,None,:,None,0] * Pop_fractions[None,None,:,None,2]       \
-        * Pop_fractions[None,None,None,:,0] * Pop_fractions[None,None,None,:,2] * Pop_weights[None,None,None,:]    \
+    Norm_11 = tf.reduce_sum(   DNm_11[:, :, None, None]       \
+        * Helium_binary_fractions[None, None, :, None] * Helium_binary_fractions[None, None, None, :]    \
         * Norm_factor   )
     LogNorm = tf.log( (Norm_0 + Norm_1)*mass_norm_stepsize    \
         + (Norm_00 + 2.*Norm_01 + Norm_11)*mass_norm_stepsize**2. )
@@ -314,7 +317,8 @@ with tf.Session(config=session_conf) as sess:
                  })
     
     print(norm_0,norm_1)
-    print(mass_norm_stepsize*norm_00,mass_norm_stepsize*norm_01,mass_norm_stepsize*norm_11)
+    print(mass_norm_stepsize*norm_00,2.*mass_norm_stepsize*norm_01,mass_norm_stepsize*norm_11)
+    print(np.sum([norm_0,norm_1]),mass_norm_stepsize*np.sum( [norm_00,2.*norm_01,norm_11] ))
     print(np.sum( pop_weights/np.sum(pop_weights)*((1.-pop_fractions[:,0])*pop_fractions[:,1] + pop_fractions[:,0]*pop_fractions[:,2]) ))
     plt.scatter(np.log10(singlesEvidence), np.log10(doublesEvidence),s=1,alpha=0.5)
     plt.xlabel('log10( evidence for single WD)')
@@ -322,6 +326,8 @@ with tf.Session(config=session_conf) as sess:
     plt.plot([20,35],[20,35],'k--')
     plt.show()
     plt.scatter([np.sum([single_objects_weights[k][0][kk]*single_objects_means[k][0][kk] for kk in range(6)]) for k in range(len(single_objects_weights))],np.log10(singlesEvidence/doublesEvidence),s=1,alpha=0.5)
+    plt.show()
+    plt.plot(np.linspace(0.,100.,1001),np.percentile(-np.log10(singlesEvidence/doublesEvidence),np.linspace(0.,100.,1001)))
     plt.show()
     exit()
     #"""
